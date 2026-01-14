@@ -6,70 +6,96 @@ from email.message import EmailMessage
 from imap_tools import MailBox, AND
 
 st.set_page_config(page_title="Company Bulk Sender", layout="wide")
+st.title("📧 Outlook Universal Sender (Cloud)")
 
-# --- 1. SIDEBAR: MANUAL EMAIL ENTRY ---
+# --- 1. LOGIN LOGIC (Fixed Passwords from Secrets) ---
 with st.sidebar:
-    st.header("Login")
+    st.header("1. Account Settings")
     from_email = st.text_input("Enter Company Email")
-    batch_size = st.number_input("Batch Size", value=50)
+    batch_size = st.number_input("BCC Batch Size", value=50, min_value=1)
+    
+    # Lookup the password based on the email entered
+    target_password = None
+    if from_email:
+        try:
+            # Looks in Secrets for the [PASSWORDS] table
+            pass_table = st.secrets["PASSWORDS"]
+            if from_email in pass_table:
+                target_password = pass_table[from_email]
+                st.success("✅ Password Found in System")
+            else:
+                st.error("❌ This email is not in the secret list.")
+        except Exception:
+            st.error("❌ Secrets not configured correctly.")
 
-# --- 2. LOGIC TO SELECT THE CORRECT FIXED PASSWORD ---
-target_password = None
-if from_email:
-    # This looks into your Secrets table to find the matching password
-    all_passwords = st.secrets["PASSWORDS"]
-    if from_email in all_passwords:
-        target_password = all_passwords[from_email]
-    else:
-        st.sidebar.error("This email is not registered in Secrets.")
+# --- 2. THE UI: TO, CC, AND DRAFT ---
+st.subheader("2. Draft & Recipients")
+draft_subject = st.text_input("Draft Email Subject (Must match Outlook Draft exactly)")
 
-# --- 3. THE SENDER LOGIC ---
-st.title("📧 Bulk Emailer")
-draft_subject = st.text_input("Draft Subject")
-uploaded_file = st.file_uploader("Upload Recipients (Excel)", type=["xlsx"])
+col1, col2 = st.columns(2)
+with col1:
+    to_email = st.text_input("To (Main Recipient)")
+    cc_email = st.text_input("CC (Optional)")
+with col2:
+    st.info("The Excel file should have emails in the FIRST column.")
+    uploaded_file = st.file_uploader("Upload Excel for BCC", type=["xlsx"])
 
-if st.button("🚀 Start Blasting"):
-    if not target_password:
-        st.error("Cannot proceed without a valid App Password.")
-    elif not draft_subject or not uploaded_file:
-        st.error("Please provide a subject and recipient list.")
+# --- 3. THE SENDING LOGIC ---
+if st.button("🚀 Send Email(s)"):
+    if not from_email or not target_password:
+        st.error("Please enter a valid company email.")
+    elif not draft_subject:
+        st.error("Please enter the Draft Subject.")
     else:
         try:
-            # STEP A: LOGIN & GET DRAFT
-            with st.status("Logging in...") as status:
+            # STEP A: GET DRAFT CONTENT
+            with st.status("Fetching your draft from Outlook...") as status:
                 with MailBox('outlook.office365.com').login(from_email, target_password, 'Drafts') as mb:
-                    msgs = list(mb.fetch(AND(subject=draft_subject)))
-                    if not msgs:
-                        st.error("Draft not found!")
+                    messages = list(mb.fetch(AND(subject=draft_subject)))
+                    if not messages:
+                        st.error(f"Could not find draft with subject: '{draft_subject}'")
                         st.stop()
-                    body = msgs[-1].html if msgs[-1].html else msgs[-1].text
-                status.update(label="Login Success! Sending...", state="complete")
+                    
+                    target_msg = messages[-1]
+                    body_content = target_msg.html if target_msg.html else target_msg.text
+                status.update(label="Draft found! Sending...", state="complete")
 
-            # STEP B: LOAD EXCEL
-            df = pd.read_excel(uploaded_file, header=None)
-            emails = df.iloc[:, 0].dropna().astype(str).tolist()
+            # STEP B: PREPARE BCC LIST
+            bcc_list = []
+            if uploaded_file:
+                df = pd.read_excel(uploaded_file, header=None)
+                all_rows = df.iloc[:, 0].dropna().astype(str).tolist()
+                # Skip header if first row isn't an email
+                bcc_list = all_rows[1:] if all_rows and "@" not in all_rows[0] else all_rows
 
-            # STEP C: SEND IN BATCHES
-            for i in range(0, len(emails), int(batch_size)):
-                batch = emails[i : i + int(batch_size)]
-                
+            # STEP C: SENDING FUNCTION
+            def send_mail(batch):
                 msg = EmailMessage()
                 msg['Subject'] = draft_subject
                 msg['From'] = from_email
-                msg['To'] = from_email # Sends to yourself, BCCs the rest
-                msg['Bcc'] = ", ".join(batch)
-                msg.add_alternative(body, subtype='html')
-
+                msg['To'] = to_email if to_email else from_email
+                if cc_email: msg['Cc'] = cc_email
+                if batch: msg['Bcc'] = ", ".join(batch)
+                
+                msg.add_alternative(body_content, subtype='html')
+                
                 with smtplib.SMTP("smtp.office365.com", 587) as server:
                     server.starttls()
                     server.login(from_email, target_password)
                     server.send_message(msg)
-                
-                st.write(f"✅ Batch {i//batch_size + 1} sent.")
-                time.sleep(5) # Pause to avoid company spam filters
 
-            st.success("🎉 All emails sent successfully!")
+            # STEP D: EXECUTION
+            if bcc_list:
+                for i in range(0, len(bcc_list), int(batch_size)):
+                    current_batch = bcc_list[i : i + int(batch_size)]
+                    send_mail(current_batch)
+                    st.write(f"✅ Sent Batch {(i // int(batch_size)) + 1}")
+                    if i + int(batch_size) < len(bcc_list):
+                        time.sleep(5) # Delay for company safety
+                st.success(f"🎉 Successfully sent to {len(bcc_list)} BCC recipients!")
+            else:
+                send_mail([])
+                st.success(f"✅ Email sent successfully to {to_email if to_email else from_email}!")
 
         except Exception as e:
-            st.error(f"Login Failed: {e}")
-            st.info("Ensure IMAP is enabled in the Outlook Web settings for THIS specific email.")
+            st.error(f"Error: {e}")
