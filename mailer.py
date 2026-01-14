@@ -13,8 +13,7 @@ REDIRECT_URI = "https://cloud-outlook-sender-kn4vdkgrcmxz7pfk5lfp3f.streamlit.ap
 
 SCOPES = ["Mail.Read", "Mail.Send", "User.Read"]
 
-# --- 2. THE OUTLOOK JUMPER (POPUPS HANDLER) ---
-# We use st.query_params to detect the return from Microsoft
+# --- 2. THE POPUP REDIRECT HANDLER ---
 if "code" in st.query_params:
     msal_app = msal.ConfidentialClientApplication(CLIENT_ID, authority=AUTHORITY, client_credential=CLIENT_SECRET)
     result = msal_app.acquire_token_by_authorization_code(
@@ -23,21 +22,21 @@ if "code" in st.query_params:
     if "access_token" in result:
         st.session_state.token = result["access_token"]
         
-        # This UI shows in the small window. It FORCES the redirect.
+        # We use window.open with '_self' to force the window to leave the app and go to Outlook
         st.markdown(f"""
             <div style="text-align:center; margin-top:50px; font-family: sans-serif;">
                 <h1 style="color: #25D366;">✅ Login Successful</h1>
-                <p style="font-size: 18px;">Opening Outlook Inbox... If it doesn't open, click below:</p>
-                <a href="https://outlook.office.com/mail/" target="_self" style="
+                <p style="font-size: 18px;">Click below to open your Outlook Inbox in this window:</p>
+                <button onclick="window.location.assign('https://outlook.office.com/mail/')" style="
                     background-color: #0078d4; color: white; padding: 15px 30px; 
-                    text-decoration: none; border-radius: 5px; font-weight: bold; display: inline-block;
-                ">GO TO OUTLOOK NOW</a>
+                    border: none; border-radius: 5px; font-weight: bold; cursor: pointer;
+                ">OPEN OUTLOOK INBOX</button>
             </div>
             <script>
-                // Force the window to change to Outlook immediately
+                // This is the forceful jump
                 setTimeout(function(){{
-                    window.location.href = 'https://outlook.office.com/mail/';
-                }}, 500);
+                    window.location.assign('https://outlook.office.com/mail/');
+                }}, 1000);
             </script>
         """, unsafe_allow_html=True)
         st.stop()
@@ -71,7 +70,7 @@ with col2:
 
 # --- 4. DYNAMIC BUTTON LOGIC ---
 if 'token' not in st.session_state:
-    # This script makes the main page refresh itself to "detect" the login
+    # Auto-refresh main page every 4 seconds to see the token
     st.markdown("""<script>setInterval(function(){ window.parent.location.reload(); }, 4000);</script>""", unsafe_allow_html=True)
     
     msal_app = msal.ConfidentialClientApplication(CLIENT_ID, authority=AUTHORITY, client_credential=CLIENT_SECRET)
@@ -79,10 +78,10 @@ if 'token' not in st.session_state:
     
     st.warning("⚠️ Action Required: Please link your Outlook account.")
     
-    # Styled Login Button (Opens the small window)
+    # Opening the window with specific parameters to ensure it is a new top-level window
     login_html = f"""
     <div style="text-align: center;">
-        <button onclick="window.open('{auth_url}', 'OutlookApp', 'width=1100,height=850')" style="
+        <button onclick="window.open('{auth_url}', 'OutlookApp', 'width=1100,height=850,menubar=yes,toolbar=yes,location=yes')" style="
             background-color: #0078d4; color: white; padding: 18px 45px; 
             border: none; border-radius: 8px; font-weight: bold; cursor: pointer; font-size: 18px;">
             🔗 LOGIN & OPEN OUTLOOK
@@ -92,7 +91,7 @@ if 'token' not in st.session_state:
     st.components.v1.html(login_html, height=100)
 
 else:
-    # THIS IS YOUR ORIGINAL SEND BUTTON
+    # --- 5. YOUR ORIGINAL SENDING FUNCTION ---
     if st.button("🚀 Send Email(s)"):
         if not draft_subject:
             st.error("Please enter the Draft Subject.")
