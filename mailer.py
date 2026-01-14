@@ -11,7 +11,7 @@ CLIENT_SECRET = st.secrets["MS_CLIENT_SECRET"]
 TENANT_ID = "common"
 AUTHORITY = f"https://login.microsoftonline.com/{TENANT_ID}"
 REDIRECT_URI = "https://cloud-outlook-sender-kn4vdkgrcmxz7pfk5lfp3f.streamlit.app/" 
-SCOPES = ["Mail.Read", "Mail.Send", "User.Read"]
+SCOPES = ["Mail.Read", "Mail.Send", "Mail.Send.Shared", "User.Read"]
 
 TOKEN_FILE = "session_token.txt"
 
@@ -33,7 +33,8 @@ st.title("📧 Outlook Universal Sender")
 
 with st.sidebar:
     st.header("1. Account Settings")
-    from_email = st.text_input("Send From (Account Email)", placeholder="Default Account")
+    # This is the account where your DRAFT is and where you want to SEND from
+    from_email = st.text_input("Target Account Email", placeholder="info_01@its1998.com")
     batch_size = st.number_input("BCC Batch Size", value=50, min_value=1)
     
     if st.button("🔌 Force Logout"):
@@ -63,7 +64,7 @@ if 'token' not in st.session_state:
         st.rerun()
 
 else:
-    st.success("🟢 Account Linked")
+    st.success("🟢 Connected")
     st.subheader("2. Draft & Recipients")
     draft_subject = st.text_input("Draft Email Subject")
 
@@ -79,19 +80,22 @@ else:
             st.error("Please enter the Draft Subject.")
         else:
             headers = {'Authorization': f"Bearer {st.session_state.token}"}
-            user_path = f"users/{from_email}" if from_email else "me"
-            base_url = f"https://graph.microsoft.com/v1.0/{user_path}"
+            
+            # Use the Target Email for BOTH searching and sending
+            # This ensures we look in info_01's drafts
+            target_path = f"users/{from_email}" if from_email else "me"
+            base_url = f"https://graph.microsoft.com/v1.0/{target_path}"
             
             try:
-                # 1. FIND DRAFT
+                # 1. SEARCH DRAFT in the specific account
                 draft_res = requests.get(f"{base_url}/messages?$filter=subject eq '{draft_subject}' and isDraft eq true", headers=headers).json()
                 
                 if 'value' not in draft_res or len(draft_res['value']) == 0:
-                    st.error(f"❌ Draft '{draft_subject}' not found.")
+                    st.error(f"❌ Could not find Draft '{draft_subject}' in the {from_email if from_email else 'your'} mailbox.")
                 else:
                     body_content = draft_res['value'][0]['body']['content']
                     
-                    # 2. EXTRACT BCC FROM EXCEL
+                    # 2. EXCEL LOGIC
                     final_bcc_list = []
                     if uploaded_file:
                         df = pd.read_excel(uploaded_file, header=None)
@@ -101,18 +105,16 @@ else:
                         else:
                             final_bcc_list = raw_list
 
-                    # 3. VERIFY ANY RECIPIENTS
                     if not final_bcc_list and not to_email and not cc_email:
                         st.error("❌ No recipients found.")
                     else:
+                        # 3. BATCH SENDING
                         if final_bcc_list:
                             total_batches = (len(final_bcc_list) + int(batch_size) - 1) // int(batch_size)
-                            
                             for i in range(0, len(final_bcc_list), int(batch_size)):
                                 batch_num = (i // int(batch_size)) + 1
                                 current_batch = final_bcc_list[i : i + int(batch_size)]
                                 
-                                # Payload includes To and CC for EVERY batch iteration
                                 payload = {
                                     "message": {
                                         "subject": draft_subject,
@@ -125,20 +127,15 @@ else:
                                 
                                 r = requests.post(f"{base_url}/sendMail", headers=headers, json=payload)
                                 if r.status_code == 202:
-                                    st.write(f"✅ Sent Batch {batch_num} of {total_batches} (Rows {i+1} to {i+len(current_batch)})")
+                                    st.write(f"✅ Sent Batch {batch_num} of {total_batches}")
                                 else:
                                     st.error(f"Error: {r.text}")
 
                                 if batch_num < total_batches:
-                                    countdown_placeholder = st.empty()
-                                    for s in range(5, 0, -1):
-                                        countdown_placeholder.info(f"⏳ Waiting {s} seconds...")
-                                        time.sleep(1)
-                                    countdown_placeholder.empty()
-                            st.success(f"🎉 Process Complete! Sent to {len(final_bcc_list)} BCC recipients.")
-                        
+                                    time.sleep(5)
+                            st.success(f"🎉 Process Complete!")
                         else:
-                            # Single send logic for just To/CC
+                            # Single send
                             payload = {
                                 "message": {
                                     "subject": draft_subject,
@@ -151,4 +148,4 @@ else:
                             st.success(f"✅ Email sent successfully.")
             
             except Exception as e:
-                st.error(f"Error: {e}")
+                st.error(f"Connection Error: {e}")
