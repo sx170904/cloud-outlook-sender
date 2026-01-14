@@ -1,101 +1,102 @@
 import streamlit as st
+import msal
+import requests
 import pandas as pd
 import time
-import smtplib
-from email.message import EmailMessage
-from imap_tools import MailBox, AND
 
-st.set_page_config(page_title="Company Bulk Sender", layout="wide")
-st.title("📧 Outlook Universal Sender (Cloud)")
+# --- 1. SETTINGS ---
+CLIENT_ID = st.secrets["MS_CLIENT_ID"]
+# We use 'common' for personal accounts
+AUTHORITY = "https://login.microsoftonline.com/common"
+SCOPES = ["Mail.Read", "Mail.Send", "User.Read"]
 
-# --- 1. LOGIN LOGIC (Fixed Passwords from Secrets) ---
-with st.sidebar:
-    st.header("1. Account Settings")
-    from_email = st.text_input("Enter Company Email")
-    batch_size = st.number_input("BCC Batch Size", value=50, min_value=1)
+st.set_page_config(page_title="Email Sender", layout="wide")
+st.title("📧 Outlook Email Blaster")
+
+# --- 2. THE LOGIN LOGIC ---
+if 'token' not in st.session_state:
+    st.info("You need to link your Outlook account to start.")
+    if st.button("🔑 Get Login Code"):
+        # Create the MSAL app instance
+        client = msal.PublicClientApplication(CLIENT_ID, authority=AUTHORITY)
+        
+        # Initiate the device flow
+        flow = client.initiate_device_flow(scopes=SCOPES)
+        
+        if "user_code" not in flow:
+            st.error("Error starting login. Check your Client ID in Secrets.")
+        else:
+            st.markdown(f"1. Go to: **{flow['verification_uri']}**")
+            st.markdown(f"2. Enter this code: :blue[**{flow['user_code']}**]")
+            
+            # Wait for the user to finish login in the browser
+            with st.spinner("Waiting for you to authorize..."):
+                result = client.acquire_token_by_device_flow(flow)
+                if "access_token" in result:
+                    st.session_state.token = result["access_token"]
+                    st.success("Login Successful!")
+                    st.rerun()
+
+# --- 3. THE SENDER INTERFACE ---
+if 'token' in st.session_state:
+    st.sidebar.success("Logged In")
+    if st.sidebar.button("Log Out"):
+        del st.session_state.token
+        st.rerun()
+
+    # User Inputs
+    st.subheader("Message Details")
+    draft_subject = st.text_input("Outlook Draft Subject", help="Must match your Draft subject exactly")
     
-    # Lookup the password based on the email entered
-    target_password = None
-    if from_email:
-        try:
-            # Looks in Secrets for the [PASSWORDS] table
-            pass_table = st.secrets["PASSWORDS"]
-            if from_email in pass_table:
-                target_password = pass_table[from_email]
-                st.success("✅ Password Found in System")
+    col1, col2 = st.columns(2)
+    with col1:
+        to_email = st.text_input("To (Main Recipient)")
+        cc_email = st.text_input("CC (Optional)")
+    with col2:
+        uploaded_file = st.file_uploader("Upload Excel (Emails in 1st column)", type=["xlsx"])
+
+    if st.button("🚀 Start Email Blast"):
+        if not draft_subject or not uploaded_file:
+            st.warning("Please enter a subject and upload an Excel file.")
+        else:
+            headers = {'Authorization': f"Bearer {st.session_state.token}"}
+            
+            # A. Fetch the Draft content
+            draft_url = f"https://graph.microsoft.com/v1.0/me/messages?$filter=subject eq '{draft_subject}' and isDraft eq true"
+            draft_res = requests.get(draft_url, headers=headers).json()
+            
+            if not draft_res.get('value'):
+                st.error("Draft not found! Check the subject spelling in your Outlook Drafts folder.")
             else:
-                st.error("❌ This email is not in the secret list.")
-        except Exception:
-            st.error("❌ Secrets not configured correctly.")
-
-# --- 2. THE UI: TO, CC, AND DRAFT ---
-st.subheader("2. Draft & Recipients")
-draft_subject = st.text_input("Draft Email Subject (Must match Outlook Draft exactly)")
-
-col1, col2 = st.columns(2)
-with col1:
-    to_email = st.text_input("To (Main Recipient)")
-    cc_email = st.text_input("CC (Optional)")
-with col2:
-    st.info("The Excel file should have emails in the FIRST column.")
-    uploaded_file = st.file_uploader("Upload Excel for BCC", type=["xlsx"])
-
-# --- 3. THE SENDING LOGIC ---
-if st.button("🚀 Send Email(s)"):
-    if not from_email or not target_password:
-        st.error("Please enter a valid company email.")
-    elif not draft_subject:
-        st.error("Please enter the Draft Subject.")
-    else:
-        try:
-            # STEP A: GET DRAFT CONTENT
-            with st.status("Fetching your draft from Outlook...") as status:
-                with MailBox('outlook.office365.com').login(from_email, target_password, 'Drafts') as mb:
-                    messages = list(mb.fetch(AND(subject=draft_subject)))
-                    if not messages:
-                        st.error(f"Could not find draft with subject: '{draft_subject}'")
-                        st.stop()
-                    
-                    target_msg = messages[-1]
-                    body_content = target_msg.html if target_msg.html else target_msg.text
-                status.update(label="Draft found! Sending...", state="complete")
-
-            # STEP B: PREPARE BCC LIST
-            bcc_list = []
-            if uploaded_file:
+                body = draft_res['value'][0]['body']['content']
+                
+                # B. Read Excel
                 df = pd.read_excel(uploaded_file, header=None)
-                all_rows = df.iloc[:, 0].dropna().astype(str).tolist()
-                # Skip header if first row isn't an email
-                bcc_list = all_rows[1:] if all_rows and "@" not in all_rows[0] else all_rows
-
-            # STEP C: SENDING FUNCTION
-            def send_mail(batch):
-                msg = EmailMessage()
-                msg['Subject'] = draft_subject
-                msg['From'] = from_email
-                msg['To'] = to_email if to_email else from_email
-                if cc_email: msg['Cc'] = cc_email
-                if batch: msg['Bcc'] = ", ".join(batch)
+                # Filter out empty rows and non-email strings
+                bcc_emails = df.iloc[:, 0].dropna().astype(str).tolist()
                 
-                msg.add_alternative(body_content, subtype='html')
+                # C. Send Loop
+                progress_bar = st.progress(0)
+                for idx, email in enumerate(bcc_emails):
+                    send_payload = {
+                        "message": {
+                            "subject": draft_subject,
+                            "body": {"contentType": "HTML", "content": body},
+                            "toRecipients": [{"emailAddress": {"address": to_email if to_email else "me@outlook.com"}}],
+                            "ccRecipients": [{"emailAddress": {"address": cc_email}}] if cc_email else [],
+                            "bccRecipients": [{"emailAddress": {"address": email}}]
+                        }
+                    }
+                    
+                    r = requests.post("https://graph.microsoft.com/v1.0/me/sendMail", headers=headers, json=send_payload)
+                    
+                    if r.status_code == 202:
+                        st.write(f"✅ Sent: {email}")
+                    else:
+                        st.error(f"❌ Error for {email}: {r.text}")
+                    
+                    # Update progress
+                    progress_bar.progress((idx + 1) / len(bcc_emails))
+                    time.sleep(1) # Safety delay to avoid spam blocks
                 
-                with smtplib.SMTP("smtp.office365.com", 587) as server:
-                    server.starttls()
-                    server.login(from_email, target_password)
-                    server.send_message(msg)
-
-            # STEP D: EXECUTION
-            if bcc_list:
-                for i in range(0, len(bcc_list), int(batch_size)):
-                    current_batch = bcc_list[i : i + int(batch_size)]
-                    send_mail(current_batch)
-                    st.write(f"✅ Sent Batch {(i // int(batch_size)) + 1}")
-                    if i + int(batch_size) < len(bcc_list):
-                        time.sleep(5) # Delay for company safety
-                st.success(f"🎉 Successfully sent to {len(bcc_list)} BCC recipients!")
-            else:
-                send_mail([])
-                st.success(f"✅ Email sent successfully to {to_email if to_email else from_email}!")
-
-        except Exception as e:
-            st.error(f"Error: {e}")
+                st.success(f"Done! Sent to {len(bcc_emails)} recipients.")
