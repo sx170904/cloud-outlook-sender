@@ -13,7 +13,7 @@ AUTHORITY = f"https://login.microsoftonline.com/{TENANT_ID}"
 
 # IMPORTANT: This must match your Azure Portal Redirect URI exactly
 # Use "http://localhost:8501" for local testing
-REDIRECT_URI = "https://your-app-name.streamlit.app" 
+REDIRECT_URI = "https://cloud-outlook-sender-kn4vdkgrcmxz7pfk5lfp3f.streamlit.app/" 
 
 SCOPES = ["Mail.Read", "Mail.Send", "User.Read"]
 
