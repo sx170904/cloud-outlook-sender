@@ -13,6 +13,7 @@ REDIRECT_URI = "https://cloud-outlook-sender-kn4vdkgrcmxz7pfk5lfp3f.streamlit.ap
 
 SCOPES = ["Mail.Read", "Mail.Send", "User.Read"]
 
+# --- 2. PAGE SETUP (YOUR ORIGINAL UI) ---
 st.set_page_config(page_title="Outlook Universal Sender", layout="wide")
 
 def get_msal_app():
@@ -20,7 +21,7 @@ def get_msal_app():
         CLIENT_ID, authority=AUTHORITY, client_credential=CLIENT_SECRET
     )
 
-# --- 2. AUTHENTICATION HANDLER (Popup & Token Logic) ---
+# --- 3. POPUP REDIRECT LOGIC ---
 if "code" in st.query_params:
     msal_app = get_msal_app()
     result = msal_app.acquire_token_by_authorization_code(
@@ -28,15 +29,15 @@ if "code" in st.query_params:
     )
     if "access_token" in result:
         st.session_state.token = result["access_token"]
-        # Redirect the POPUP window to Outlook Mail
+        # This makes the small window go to the real Outlook Inbox
         st.markdown("""
             <script>
-                window.location.replace('https://outlook.office.com/mail/');
+                window.location.href = 'https://outlook.office.com/mail/';
             </script>
         """, unsafe_allow_html=True)
         st.stop()
 
-# --- 3. UI (EXACTLY YOUR WIN32 DESIGN) ---
+# --- 4. MAIN APP UI (EXACTLY YOUR DESIGN) ---
 st.title("📧 Outlook Universal Sender")
 
 with st.sidebar:
@@ -46,7 +47,7 @@ with st.sidebar:
     st.info("💡 A 5-second pause is applied between each batch for safety.")
     
     if 'token' in st.session_state:
-        if st.button("🔌 Disconnect Account"):
+        if st.button("🔌 Logout / Switch Account"):
             for key in list(st.session_state.keys()): del st.session_state[key]
             st.rerun()
 
@@ -62,36 +63,31 @@ with col2:
     st.info("The Excel file should have emails in the **first column**.")
     uploaded_file = st.file_uploader("Upload Excel (Optional)", type=["xlsx"])
 
-# --- 4. THE DYNAMIC BUTTON LOGIC ---
+# --- 5. THE DYNAMIC BUTTON ---
 if 'token' not in st.session_state:
-    # STEP 1: LOGIN BUTTON
+    # AUTO-REFRESH SCRIPT: Main page checks for login status every 4 seconds
+    st.markdown("""<script>setInterval(function(){ window.parent.location.reload(); }, 4000);</script>""", unsafe_allow_html=True)
+    
     msal_app = get_msal_app()
     auth_url = msal_app.get_authorization_request_url(SCOPES, redirect_uri=REDIRECT_URI, prompt="select_account")
     
-    # JavaScript for the popup
-    popup_js = f"""
-    <script>
-    function openOutlook() {{
-        const w = 1100, h = 800;
-        const left = (window.screen.width/2)-(w/2), top = (window.screen.height/2)-(h/2);
-        window.open('{auth_url}', 'OutlookWindow', `width=${{w}},height=${{h}},top=${{top}},left=${{left}}`);
-    }}
-    </script>
-    """
-    st.components.v1.html(popup_js, height=0)
+    st.warning("⚠️ Action Required: Link your Outlook account to enable the Send button.")
     
-    st.warning("⚠️ You must link your Outlook account before sending.")
-    if st.button("🔑 Step 1: Login to Outlook"):
-        st.components.v1.html(f"{popup_js}<script>openOutlook();</script>", height=0)
-        # Auto-refresh main page to detect when login is done
-        time.sleep(2)
-        st.rerun()
+    # Styled Login Button
+    login_btn_html = f"""
+    <div style="text-align: center;">
+        <a href="{auth_url}" target="_blank" 
+           onclick="window.open('{auth_url}', 'OutlookApp', 'width=1100,height=800'); return false;" 
+           style="background-color: #0078d4; color: white; padding: 15px 45px; text-decoration: none; border-radius: 8px; font-weight: bold; display: inline-block; font-size: 18px;">
+            🔗 LOGIN & OPEN OUTLOOK
+        </a>
+    </div>
+    """
+    st.markdown(login_btn_html, unsafe_allow_html=True)
 
 else:
-    # STEP 2: SEND BUTTON (Only shows after login)
-    send_btn = st.button("🚀 Step 2: Send Email(s)")
-
-    if send_btn:
+    # THE ORIGINAL SEND BUTTON
+    if st.button("🚀 Send Email(s)"):
         if not draft_subject:
             st.error("Please enter the Draft Subject.")
         else:
@@ -117,7 +113,7 @@ else:
                     if not to_email and not bcc_list:
                         st.error("No recipients found.")
                     else:
-                        # Batching Logic
+                        # YOUR BATCHING LOGIC
                         total_batches = (len(bcc_list) + batch_size - 1) // batch_size if bcc_list else 1
                         
                         for i in range(0, max(len(bcc_list), 1), int(batch_size)):
@@ -144,7 +140,7 @@ else:
                             if batch_num < total_batches:
                                 time.sleep(5)
                         
-                        st.success("🎉 All emails sent successfully!")
+                        st.success("🎉 All tasks complete!")
 
             except Exception as e:
-                st.error(f"Connection Error: {e}")
+                st.error(f"Error: {e}")
