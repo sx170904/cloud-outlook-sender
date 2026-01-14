@@ -13,17 +13,15 @@ AUTHORITY = f"https://login.microsoftonline.com/{TENANT_ID}"
 REDIRECT_URI = "https://cloud-outlook-sender-kn4vdkgrcmxz7pfk5lfp3f.streamlit.app/" 
 SCOPES = ["Mail.Read", "Mail.Send", "User.Read"]
 
-# File path to sync login between tabs
 TOKEN_FILE = "session_token.txt"
 
-# --- 2. THE LOGIN HANDLER (Runs in Tab B) ---
+# --- 2. LOGIN HANDLER ---
 if "code" in st.query_params:
     msal_app = msal.ConfidentialClientApplication(CLIENT_ID, authority=AUTHORITY, client_credential=CLIENT_SECRET)
     result = msal_app.acquire_token_by_authorization_code(
         st.query_params["code"], scopes=SCOPES, redirect_uri=REDIRECT_URI
     )
     if "access_token" in result:
-        # Save token to a file so Tab A can see it
         with open(TOKEN_FILE, "w") as f:
             f.write(result["access_token"])
         
@@ -40,33 +38,27 @@ if "code" in st.query_params:
 st.set_page_config(page_title="Outlook Universal Sender", layout="wide")
 st.title("📧 Outlook Universal Sender")
 
-# Sidebar for settings
 with st.sidebar:
     st.header("1. Account Settings")
     from_email = st.text_input("Send From (Account Email)", placeholder="Default Account")
     batch_size = st.number_input("BCC Batch Size", value=50, min_value=1)
+    st.info("💡 A 5-second pause is applied between each batch for safety.")
     
     if st.button("🔌 Force Logout"):
-        if os.path.exists(TOKEN_FILE):
-            os.remove(TOKEN_FILE)
-        if 'token' in st.session_state:
-            del st.session_state.token
+        if os.path.exists(TOKEN_FILE): os.remove(TOKEN_FILE)
+        if 'token' in st.session_state: del st.session_state.token
         st.rerun()
 
 # --- 4. THE SYNC GATE ---
-# Check if a token exists in the file (from Tab B)
 if os.path.exists(TOKEN_FILE):
     with open(TOKEN_FILE, "r") as f:
         st.session_state.token = f.read()
 
-# UI Switch
 if 'token' not in st.session_state:
     msal_app = msal.ConfidentialClientApplication(CLIENT_ID, authority=AUTHORITY, client_credential=CLIENT_SECRET)
     auth_url = msal_app.get_authorization_request_url(SCOPES, redirect_uri=REDIRECT_URI, prompt="select_account")
     
-    st.info("👋 Follow these steps carefully:")
-    
-    # Force New Tab
+    st.info("👋 Follow the steps below:")
     st.markdown(f"""
         <div style="text-align: center; margin: 30px 0;">
             <a href="{auth_url}" target="_blank" style="
@@ -78,11 +70,10 @@ if 'token' not in st.session_state:
     """, unsafe_allow_html=True)
 
     if st.button("2. ✅ ACTIVATE SENDER", use_container_width=True, type="primary"):
-        # This forces the app to look at the 'session_token.txt' file
         st.rerun()
 
 else:
-    # --- 5. SENDER UI (FULL FEATURES) ---
+    # --- 5. SENDER UI (RESTORED FEATURES) ---
     st.success("🟢 Account Linked Successfully")
     st.subheader("2. Draft & Recipients")
     draft_subject = st.text_input("Draft Email Subject", placeholder="Match your Outlook Draft name exactly")
@@ -107,30 +98,69 @@ else:
                     st.error(f"❌ Draft '{draft_subject}' not found.")
                 else:
                     body_content = draft_res['value'][0]['body']['content']
+                    
+                    # Recipients Logic
                     bcc_list = []
                     if uploaded_file:
                         df = pd.read_excel(uploaded_file, header=None)
                         all_rows = df.iloc[:, 0].dropna().astype(str).tolist()
-                        bcc_list = all_rows[1:] if all_rows and "@" not in all_rows[0] else all_rows
+                        
+                        if all_rows and "@" not in all_rows[0]:
+                            st.write(f"ℹ️ Skipping header row: '{all_rows[0]}'")
+                            bcc_list = all_rows[1:]
+                        else:
+                            bcc_list = all_rows
 
-                    # Sending Loop
-                    for i in range(0, max(len(bcc_list), 1), int(batch_size)):
-                        batch = bcc_list[i : i + int(batch_size)]
+                    # --- BATCH LOGIC WITH PROFESSIONAL STATUS ---
+                    if bcc_list:
+                        total_batches = (len(bcc_list) + int(batch_size) - 1) // int(batch_size)
+                        
+                        for i in range(0, len(bcc_list), int(batch_size)):
+                            batch_num = (i // int(batch_size)) + 1
+                            current_batch = bcc_list[i : i + int(batch_size)]
+                            
+                            payload = {
+                                "message": {
+                                    "subject": draft_subject,
+                                    "body": {"contentType": "HTML", "content": body_content},
+                                    "toRecipients": [{"emailAddress": {"address": to_email}}] if to_email else [],
+                                    "ccRecipients": [{"emailAddress": {"address": cc_email}}] if cc_email else [],
+                                    "bccRecipients": [{"emailAddress": {"address": e}} for e in current_batch]
+                                }
+                            }
+                            
+                            r = requests.post(f"{base_url}/sendMail", headers=headers, json=payload)
+                            
+                            if r.status_code == 202:
+                                # Professional Message like Desktop
+                                st.write(f"✅ Sent Batch {batch_num} of {total_batches} (Rows {i+1} to {i+len(current_batch)})")
+                            else:
+                                st.error(f"Error in Batch {batch_num}: {r.text}")
+
+                            # --- 5 SECOND COUNTDOWN TIMER ---
+                            if batch_num < total_batches:
+                                countdown_placeholder = st.empty()
+                                for seconds_left in range(5, 0, -1):
+                                    countdown_placeholder.info(f"⏳ Waiting {seconds_left} seconds before next batch...")
+                                    time.sleep(1)
+                                countdown_placeholder.empty()
+                        
+                        st.success(f"🎉 All batches sent successfully to {len(bcc_list)} recipients!")
+                    
+                    elif to_email:
+                        # Single Send logic
                         payload = {
                             "message": {
                                 "subject": draft_subject,
                                 "body": {"contentType": "HTML", "content": body_content},
-                                "toRecipients": [{"emailAddress": {"address": to_email}}] if to_email else [],
-                                "ccRecipients": [{"emailAddress": {"address": cc_email}}] if cc_email else [],
-                                "bccRecipients": [{"emailAddress": {"address": e}} for e in batch]
+                                "toRecipients": [{"emailAddress": {"address": to_email}}],
+                                "ccRecipients": [{"emailAddress": {"address": cc_email}}] if cc_email else []
                             }
                         }
-                        r = requests.post(f"{base_url}/sendMail", headers=headers, json=payload)
-                        if r.status_code == 202:
-                            st.write(f"✅ Batch {i//batch_size + 1} Sent")
-                        else:
-                            st.error(f"Error: {r.text}")
-                        time.sleep(5)
-                    st.success("🎉 Process Finished!")
+                        requests.post(f"{base_url}/sendMail", headers=headers, json=payload)
+                        st.success(f"✅ Single email sent successfully to {to_email}")
+                    else:
+                        st.error("No recipients found.")
+                        
             except Exception as e:
                 st.error(f"Error: {e}")
