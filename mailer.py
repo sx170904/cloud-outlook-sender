@@ -5,87 +5,71 @@ import smtplib
 from email.message import EmailMessage
 from imap_tools import MailBox, AND
 
-st.set_page_config(page_title="Outlook Cloud Sender", layout="wide")
-st.title("📧 Outlook Universal Sender (Cloud)")
+st.set_page_config(page_title="Company Bulk Sender", layout="wide")
 
-# --- 1. GET THE FIXED PASSWORD FROM SECRETS ---
-try:
-    # This stays hidden and fixed
-    FIXED_APP_PASSWORD = st.secrets["APP_PASSWORD"]
-except Exception:
-    st.error("Missing App Password in Streamlit Secrets!")
-    st.stop()
-
-# --- 2. SIDEBAR: MANUAL EMAIL ENTRY ---
+# --- 1. SIDEBAR: MANUAL EMAIL ENTRY ---
 with st.sidebar:
-    st.header("1. Account Settings")
-    # You still enter your email manually here
-    from_email = st.text_input("Your Outlook Email")
-    batch_size = st.number_input("BCC Batch Size", value=50, min_value=1)
-    
-    st.markdown("---")
-    st.info("🔐 App Password is fixed in the system backend.")
+    st.header("Login")
+    from_email = st.text_input("Enter Company Email")
+    batch_size = st.number_input("Batch Size", value=50)
 
-# --- 3. UI: DRAFT & RECIPIENTS ---
-st.subheader("2. Draft & Recipients")
-draft_subject = st.text_input("Draft Email Subject")
+# --- 2. LOGIC TO SELECT THE CORRECT FIXED PASSWORD ---
+target_password = None
+if from_email:
+    # This looks into your Secrets table to find the matching password
+    all_passwords = st.secrets["PASSWORDS"]
+    if from_email in all_passwords:
+        target_password = all_passwords[from_email]
+    else:
+        st.sidebar.error("This email is not registered in Secrets.")
 
-col1, col2 = st.columns(2)
-with col1:
-    to_email = st.text_input("To (Optional)")
-    cc_email = st.text_input("CC (Optional)")
-with col2:
-    uploaded_file = st.file_uploader("Upload Excel", type=["xlsx"])
+# --- 3. THE SENDER LOGIC ---
+st.title("📧 Bulk Emailer")
+draft_subject = st.text_input("Draft Subject")
+uploaded_file = st.file_uploader("Upload Recipients (Excel)", type=["xlsx"])
 
-# --- 4. THE LOGIC ---
-if st.button("🚀 Send Email(s)"):
-    if not from_email or not draft_subject:
-        st.error("Please enter your Email and Draft Subject.")
+if st.button("🚀 Start Blasting"):
+    if not target_password:
+        st.error("Cannot proceed without a valid App Password.")
+    elif not draft_subject or not uploaded_file:
+        st.error("Please provide a subject and recipient list.")
     else:
         try:
-            # STEP A: FETCH DRAFT (Using fixed password)
-            with st.status("Accessing Outlook...") as status:
-                with MailBox('outlook.office365.com').login(from_email, FIXED_APP_PASSWORD, 'Drafts') as mb:
-                    messages = list(mb.fetch(AND(subject=draft_subject)))
-                    if not messages:
-                        st.error(f"Draft not found: '{draft_subject}'")
+            # STEP A: LOGIN & GET DRAFT
+            with st.status("Logging in...") as status:
+                with MailBox('outlook.office365.com').login(from_email, target_password, 'Drafts') as mb:
+                    msgs = list(mb.fetch(AND(subject=draft_subject)))
+                    if not msgs:
+                        st.error("Draft not found!")
                         st.stop()
-                    target_msg = messages[-1]
-                    body_content = target_msg.html if target_msg.html else target_msg.text
-                status.update(label="Draft retrieved!", state="complete")
+                    body = msgs[-1].html if msgs[-1].html else msgs[-1].text
+                status.update(label="Login Success! Sending...", state="complete")
 
-            # STEP B: PREPARE RECIPIENTS
-            bcc_list = []
-            if uploaded_file:
-                df = pd.read_excel(uploaded_file, header=None)
-                all_rows = df.iloc[:, 0].dropna().astype(str).tolist()
-                bcc_list = all_rows[1:] if all_rows and "@" not in all_rows[0] else all_rows
+            # STEP B: LOAD EXCEL
+            df = pd.read_excel(uploaded_file, header=None)
+            emails = df.iloc[:, 0].dropna().astype(str).tolist()
 
-            # STEP C: SENDING (Using fixed password)
-            def send_mail(batch):
+            # STEP C: SEND IN BATCHES
+            for i in range(0, len(emails), int(batch_size)):
+                batch = emails[i : i + int(batch_size)]
+                
                 msg = EmailMessage()
                 msg['Subject'] = draft_subject
                 msg['From'] = from_email
-                msg['To'] = to_email if to_email else from_email
-                if cc_email: msg['Cc'] = cc_email
-                if batch: msg['Bcc'] = ", ".join(batch)
-                msg.add_alternative(body_content, subtype='html')
-                
+                msg['To'] = from_email # Sends to yourself, BCCs the rest
+                msg['Bcc'] = ", ".join(batch)
+                msg.add_alternative(body, subtype='html')
+
                 with smtplib.SMTP("smtp.office365.com", 587) as server:
                     server.starttls()
-                    server.login(from_email, FIXED_APP_PASSWORD)
+                    server.login(from_email, target_password)
                     server.send_message(msg)
+                
+                st.write(f"✅ Batch {i//batch_size + 1} sent.")
+                time.sleep(5) # Pause to avoid company spam filters
 
-            # STEP D: EXECUTION
-            if bcc_list:
-                for i in range(0, len(bcc_list), int(batch_size)):
-                    send_mail(bcc_list[i : i + int(batch_size)])
-                    st.write(f"✅ Sent Batch {i//batch_size + 1}")
-                    if i + int(batch_size) < len(bcc_list): time.sleep(5)
-                st.success("🎉 Done!")
-            else:
-                send_mail([])
-                st.success("✅ Email sent!")
+            st.success("🎉 All emails sent successfully!")
 
         except Exception as e:
-            st.error(f"Error: {e}")
+            st.error(f"Login Failed: {e}")
+            st.info("Ensure IMAP is enabled in the Outlook Web settings for THIS specific email.")
