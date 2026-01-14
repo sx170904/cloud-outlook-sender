@@ -12,7 +12,7 @@ TENANT_ID = "common"
 AUTHORITY = f"https://login.microsoftonline.com/{TENANT_ID}"
 
 # IMPORTANT: This MUST match your Azure Web Redirect URI exactly
-REDIRECT_URI = "https://your-app-name.streamlit.app" 
+REDIRECT_URI = "https://cloud-outlook-sender-kn4vdkgrcmxz7pfk5lfp3f.streamlit.app/" 
 
 SCOPES = ["Mail.Read", "Mail.Send", "User.Read"]
 
