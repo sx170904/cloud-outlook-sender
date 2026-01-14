@@ -9,7 +9,8 @@ CLIENT_ID = st.secrets["MS_CLIENT_ID"]
 CLIENT_SECRET = st.secrets["MS_CLIENT_SECRET"]
 TENANT_ID = "common"
 AUTHORITY = f"https://login.microsoftonline.com/{TENANT_ID}"
-# Ensure this matches your Azure Portal Redirect URI
+
+# YOUR SPECIFIC REDIRECT URL
 REDIRECT_URI = "https://cloud-outlook-sender-kn4vdkgrcmxz7pfk5lfp3f.streamlit.app/" 
 
 SCOPES = ["Mail.Read", "Mail.Send", "User.Read"]
@@ -21,9 +22,7 @@ def get_msal_app():
         CLIENT_ID, authority=AUTHORITY, client_credential=CLIENT_SECRET
     )
 
-# --- 2. THE POPUP & REDIRECT LOGIC ---
-
-# Step A: Check if we are inside the Popup and just finished login
+# --- 2. POPUP HANDLER (Runs inside the small window after login) ---
 if "code" in st.query_params:
     msal_app = get_msal_app()
     result = msal_app.acquire_token_by_authorization_code(
@@ -32,70 +31,79 @@ if "code" in st.query_params:
     if "access_token" in result:
         st.session_state.token = result["access_token"]
         
-        # THIS IS THE PART THAT SHOWS MICROSOFT OUTLOOK
-        # We use JavaScript to:
-        # 1. Refresh the Main Opener window (the original web)
-        # 2. Redirect THIS small window to Outlook Web
-        st.markdown("""
-            <script>
-                if (window.opener) {
-                    window.opener.location.reload(); 
-                }
-                window.location.href = 'https://outlook.office.com/mail/';
-            </script>
-            <div style="text-align:center; margin-top:50px;">
-                <h2>Login Successful!</h2>
-                <p>Redirecting this window to Outlook...</p>
+        # This UI shows in the small window briefly before jumping to Outlook
+        st.markdown(f"""
+            <div style="text-align:center; margin-top:50px; font-family:sans-serif;">
+                <h2 style="color: #25D366;">✅ Login Successful!</h2>
+                <p>Redirecting this window to your Outlook Inbox...</p>
+                <script>
+                    // Redirect the small window to the actual Outlook Web App
+                    setTimeout(function(){{
+                        window.location.href = 'https://outlook.office.com/mail/';
+                    }}, 1500);
+                </script>
             </div>
         """, unsafe_allow_html=True)
         st.stop()
 
-# --- 3. LOGIN INTERFACE (Original Web View) ---
+# --- 3. LOGIN INTERFACE (Runs on the main web page) ---
 if 'token' not in st.session_state:
     st.title("📧 Outlook Universal Sender")
     
+    # AUTO-DETECT SCRIPT: The main page "pings" itself to see if the token exists
+    # This prevents the original page from staying stuck on the login screen
+    st.markdown("""
+        <script>
+        var checkLogin = setInterval(function() {
+            // We refresh the main page to check if the session_state.token is now set
+            window.parent.location.reload();
+        }, 4000); 
+        </script>
+    """, unsafe_allow_html=True)
+
     msal_app = get_msal_app()
+    # prompt="select_account" allows you to switch accounts every time
     auth_url = msal_app.get_authorization_request_url(
         SCOPES, redirect_uri=REDIRECT_URI, prompt="select_account"
     )
 
-    st.info("💡 Click the button below. Login in the popup, and it will become your Outlook window.")
+    st.info("💡 Link your account. Once authorized, Outlook will open here in a new window.")
     
-    # Popup JS
     popup_js = f"""
     <script>
     function openOutlookLogin() {{
-        const w = 1100, h = 800;
+        const w = 1100, h = 850;
         const left = (window.screen.width/2)-(w/2), top = (window.screen.height/2)-(h/2);
-        window.open('{auth_url}', 'OutlookLogin', `width=${{w}},height=${{h}},top=${{top}},left=${{left}},resizable=yes,scrollbars=yes`);
+        window.open('{auth_url}', 'OutlookLogin', `width=${{w}},height=${{h}},top=${{top}},left=${{left}},resizable=yes`);
     }}
     </script>
-    <div style="text-align: center; padding: 30px;">
+    <div style="text-align: center; padding: 20px;">
         <button onclick="openOutlookLogin()" style="
-            background-color: #25D366; color: white; padding: 18px 40px; 
-            border: none; border-radius: 35px; font-size: 20px; font-weight: bold; cursor: pointer;
-            box-shadow: 0 4px 10px rgba(0,0,0,0.2);
-        ">🔗 LOGIN & OPEN OUTLOOK</button>
+            background-color: #25D366; color: white; padding: 20px 50px; 
+            border: none; border-radius: 40px; font-size: 20px; font-weight: bold; cursor: pointer;
+            box-shadow: 0 4px 15px rgba(37, 211, 102, 0.4);
+        ">🔗 OPEN OUTLOOK & LOGIN</button>
     </div>
     """
     st.components.v1.html(popup_js, height=200)
     st.stop()
 
-# --- 4. MAIN SENDER UI (Unlocked original web) ---
-st.title("📧 Outlook Universal Sender")
+# --- 4. MAIN SENDER UI (Unlocked original web page) ---
+st.title("🚀 Outlook Universal Sender")
 
 with st.sidebar:
     st.header("1. Account Settings")
-    from_email = st.text_input("Send From (Account Email)")
+    from_email = st.text_input("Send From (Account Email)", placeholder="Optional")
     batch_size = st.number_input("BCC Batch Size", value=50, min_value=1)
     
-    if st.button("🔌 Disconnect / Switch"):
+    if st.button("🔌 Disconnect / Switch Account"):
+        # Fully clears session and redirects to Microsoft Logout
         logout_url = f"https://login.microsoftonline.com/common/oauth2/v2.0/logout?post_logout_redirect_uri={REDIRECT_URI}"
         for key in list(st.session_state.keys()): del st.session_state[key]
         st.markdown(f'<meta http-equiv="refresh" content="0;URL=\'{logout_url}\'" />', unsafe_allow_html=True)
 
 st.subheader("2. Draft & Recipients")
-draft_subject = st.text_input("Draft Email Subject")
+draft_subject = st.text_input("Draft Email Subject", placeholder="Match your Outlook Draft exactly")
 
 col1, col2 = st.columns(2)
 with col1:
@@ -103,28 +111,25 @@ with col1:
     cc_email = st.text_input("CC (Optional)")
 
 with col2:
+    st.info("The Excel file should have emails in the **first column**.")
     uploaded_file = st.file_uploader("Upload Excel (Optional)", type=["xlsx"])
 
-send_btn = st.button("🚀 Send Email(s)")
+send_btn = st.button("🚀 START EMAIL BLAST")
 
-# --- 5. SENDING LOGIC ---
+# --- 5. LOGIC (Your original win32 logic ported to Web API) ---
 if send_btn:
     if not draft_subject:
         st.error("Please enter the Draft Subject.")
     else:
         headers = {'Authorization': f"Bearer {st.session_state.token}"}
-        # Correctly format the URL for 'from_email'
-        if from_email:
-            base_url = f"https://graph.microsoft.com/v1.0/users/{from_email}"
-        else:
-            base_url = "https://graph.microsoft.com/v1.0/me"
+        base_url = f"https://graph.microsoft.com/v1.0/{f'users/{from_email}' if from_email else 'me'}"
 
         try:
-            # Search for the draft
+            # Find Draft by Subject
             draft_res = requests.get(f"{base_url}/messages?$filter=subject eq '{draft_subject}' and isDraft eq true", headers=headers).json()
 
             if 'value' not in draft_res or len(draft_res['value']) == 0:
-                st.error(f"Could not find draft: '{draft_subject}' in the account.")
+                st.error(f"Draft '{draft_subject}' not found. Check the Outlook window to verify the name.")
             else:
                 body_content = draft_res['value'][0]['body']['content']
                 
@@ -164,7 +169,7 @@ if send_btn:
                         if batch_num < total_batches:
                             time.sleep(5)
                     
-                    st.success("🎉 All tasks complete!")
+                    st.success("🎉 Email Blast Completed Successfully!")
 
         except Exception as e:
-            st.error(f"An error occurred: {e}")
+            st.error(f"Critical Error: {e}")
