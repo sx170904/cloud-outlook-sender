@@ -7,15 +7,13 @@ import time
 # --- 1. CONFIGURATION ---
 CLIENT_ID = st.secrets["MS_CLIENT_ID"]
 CLIENT_SECRET = st.secrets["MS_CLIENT_SECRET"]
-TENANT_ID = "common" 
+TENANT_ID = "common"
 AUTHORITY = f"https://login.microsoftonline.com/{TENANT_ID}"
-
-# ENSURE THIS MATCHES AZURE EXACTLY (Copy from your browser bar)
-REDIRECT_URI = "https://cloud-outlook-sender-kn4vdkgrcmxz7pfk5lfp3f.streamlit.app/" 
+REDIRECT_URI = "https://cloud-outlook-sender-kn4vdkgrcmxz7pfk5lfp3f.streamlit.app/" # MUST match Azure Web Redirect
 
 SCOPES = ["Mail.Read", "Mail.Send", "User.Read"]
 
-st.set_page_config(page_title="Outlook Universal Sender", layout="wide")
+st.set_page_config(page_title="Outlook Pro Sender", layout="wide")
 
 # --- 2. AUTHENTICATION HELPER ---
 def get_msal_app():
@@ -23,39 +21,46 @@ def get_msal_app():
         CLIENT_ID, authority=AUTHORITY, client_credential=CLIENT_SECRET
     )
 
-# --- 3. LOGIN INTERFACE (The Final Fix) ---
+# --- 3. LOGIN INTERFACE (The "WhatsApp Web" Style Popup) ---
 if 'token' not in st.session_state:
     st.title("📧 Outlook Universal Sender")
     
     msal_app = get_msal_app()
     auth_url = msal_app.get_authorization_request_url(SCOPES, redirect_uri=REDIRECT_URI)
-    
-    st.warning("Please sign in to connect your Outlook account.")
 
-    # Using a direct Anchor tag (<a>) with target="_top". 
-    # This is the most reliable way to force the browser to navigate.
-    st.markdown(f"""
-        <div style="text-align: center;">
-            <a href="{auth_url}" target="_top" style="
-                background-color: #0078d4;
-                color: white;
-                padding: 15px 32px;
-                text-decoration: none;
-                display: inline-block;
-                font-size: 16px;
-                border-radius: 8px;
-                font-weight: bold;
-                box-shadow: 0px 4px 6px rgba(0,0,0,0.1);
-            ">
-                🚀 LOG IN WITH MICROSOFT OUTLOOK
-            </a>
-            <p style="margin-top:15px; font-size:14px; color:#666;">
-                If clicking doesn't work, right-click the button and select <b>'Open in new tab'</b>
-            </p>
-        </div>
-    """, unsafe_allow_html=True)
-    
-    # Handle the code returning from Microsoft
+    st.info("Please link your Microsoft Outlook account to begin.")
+
+    # JAVASCRIPT POPUP LOGIC
+    # This creates a small controlled window just for the login
+    popup_js = f"""
+    <script>
+    function openLoginPopup() {{
+        const width = 600, height = 600;
+        const left = (window.innerWidth / 2) - (width / 2);
+        const top = (window.innerHeight / 2) - (height / 2);
+        window.open('{auth_url}', 'MSAL_Login', `width=${{width}},height=${{height}},top=${{top}},left=${{left}},status=no,menubar=no,toolbar=no`);
+    }}
+    </script>
+    <div style="text-align: center; padding: 50px;">
+        <button onclick="openLoginPopup()" style="
+            background-color: #25D366; 
+            color: white; 
+            padding: 15px 40px; 
+            border: none; 
+            border-radius: 30px; 
+            font-size: 18px; 
+            font-weight: bold; 
+            cursor: pointer;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.2);
+        ">
+            🔗 OPEN OUTLOOK LOGIN
+        </button>
+        <p style="margin-top: 20px; color: #666;">A new window will open to authorize your account.</p>
+    </div>
+    """
+    st.components.v1.html(popup_js, height=300)
+
+    # Detect if we are returning from the login window
     if "code" in st.query_params:
         try:
             result = msal_app.acquire_token_by_authorization_code(
@@ -69,15 +74,14 @@ if 'token' not in st.session_state:
             st.error(f"Login failed: {e}")
     st.stop()
 
-# --- 4. MAIN UI (Matches your original design) ---
-st.title("📧 Outlook Universal Sender")
+# --- 4. MAIN UI (The Blasting Application) ---
+st.title("🚀 Outlook Universal Sender")
 
 with st.sidebar:
     st.header("1. Account Settings")
-    from_email = st.text_input("Send From (Account Email)", help="Leave blank to use default account")
+    from_email = st.text_input("Send From (Account Email)", help="Leave blank to use primary")
     batch_size = st.number_input("BCC Batch Size", value=50, min_value=1)
-    st.info("💡 A 5-second pause is applied between each batch for safety.")
-    if st.button("Logout"):
+    if st.button("🔌 Disconnect Account"):
         del st.session_state.token
         st.rerun()
 
@@ -90,13 +94,9 @@ with col1:
     cc_email = st.text_input("CC (Optional)")
 
 with col2:
-    st.info("The Excel file should have emails in the **first column**.")
     uploaded_file = st.file_uploader("Upload Excel (Optional)", type=["xlsx"])
 
-send_btn = st.button("🚀 Send Email(s)")
-
-# --- 5. LOGIC (Web-API version) ---
-if send_btn:
+if st.button("🚀 START EMAIL BLAST"):
     if not draft_subject:
         st.error("Please enter the Draft Subject.")
     else:
@@ -118,17 +118,14 @@ if send_btn:
                 if uploaded_file:
                     df = pd.read_excel(uploaded_file, header=None)
                     all_rows = df.iloc[:, 0].dropna().astype(str).tolist()
-                    if all_rows and "@" not in all_rows[0]:
-                        bcc_list = all_rows[1:]
-                    else:
-                        bcc_list = all_rows
+                    bcc_list = all_rows[1:] if all_rows and "@" not in all_rows[0] else all_rows
 
-                # C. Batch Sending
+                # C. Batch Sending Logic
                 if not to_email and not bcc_list:
                     st.error("No recipients found.")
                 else:
-                    total_batches = (len(bcc_list) + batch_size - 1) // batch_size if bcc_list else 1
-                    for i in range(0, max(len(bcc_list), 1), int(batch_size)):
+                    total_emails = len(bcc_list)
+                    for i in range(0, max(total_emails, 1), int(batch_size)):
                         batch = bcc_list[i:i + int(batch_size)]
                         batch_num = (i // int(batch_size)) + 1
                         
@@ -141,19 +138,16 @@ if send_btn:
                                 "bccRecipients": [{"emailAddress": {"address": email}} for email in batch]
                             }
                         }
-                        send_res = requests.post(f"{base_url}/sendMail", headers=headers, json=payload)
+                        res = requests.post(f"{base_url}/sendMail", headers=headers, json=payload)
                         
-                        if send_res.status_code == 202:
-                            st.write(f"✅ Sent Batch {batch_num} of {total_batches}")
+                        if res.status_code == 202:
+                            st.write(f"✅ Sent Batch {batch_num}")
                         else:
-                            st.error(f"Error: {send_res.text}")
+                            st.error(f"Error: {res.text}")
 
-                        if batch_num < total_batches:
-                            countdown = st.empty()
-                            for s in range(5, 0, -1):
-                                countdown.info(f"⏳ Waiting {s} seconds before next batch...")
-                                time.sleep(1)
-                            countdown.empty()
-                    st.success("🎉 Process Complete!")
+                        if (i + int(batch_size)) < total_emails:
+                            st.info("⏳ Waiting 5 seconds...")
+                            time.sleep(5)
+                    st.success("🎉 Blasting Complete!")
         except Exception as e:
             st.error(f"Error: {e}")
