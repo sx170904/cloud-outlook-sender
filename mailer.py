@@ -4,53 +4,66 @@ import requests
 import pandas as pd
 import time
 
-# --- 1. CONFIGURATION (Must be in Streamlit Secrets) ---
+# --- 1. CONFIGURATION ---
+# These must be in your Streamlit Cloud Secrets
 CLIENT_ID = st.secrets["MS_CLIENT_ID"]
 CLIENT_SECRET = st.secrets["MS_CLIENT_SECRET"]
 TENANT_ID = "common" 
 AUTHORITY = f"https://login.microsoftonline.com/{TENANT_ID}"
-REDIRECT_URI = "https://cloud-outlook-sender-kn4vdkgrcmxz7pfk5lfp3f.streamlit.app/" # Update this!
+
+# IMPORTANT: This MUST match your Azure Web Redirect URI exactly
+REDIRECT_URI = "https://your-app-name.streamlit.app" 
 
 SCOPES = ["Mail.Read", "Mail.Send", "User.Read"]
 
 st.set_page_config(page_title="Outlook Universal Sender", layout="wide")
 
-# --- 2. AUTHENTICATION LOGIC ---
+# --- 2. AUTHENTICATION HELPER ---
 def get_msal_app():
     return msal.ConfidentialClientApplication(
         CLIENT_ID, authority=AUTHORITY, client_credential=CLIENT_SECRET
     )
 
+# --- 3. LOGIN INTERFACE (The Fix) ---
 if 'token' not in st.session_state:
     st.title("📧 Outlook Universal Sender")
-    st.warning("Please sign in to connect your Outlook account.")
     
     msal_app = get_msal_app()
     auth_url = msal_app.get_authorization_request_url(SCOPES, redirect_uri=REDIRECT_URI)
     
-    # The "Window Pop-out" Login Button
-    st.markdown(f"""
-        <a href="{auth_url}" target="_top" style="
-            background-color: #0078d4; color: white; padding: 12px 24px;
-            text-decoration: none; border-radius: 4px; font-weight: bold;
-        ">Click to Login with Microsoft Outlook</a>
-    """, unsafe_allow_html=True)
+    st.warning("Please sign in to connect your Outlook account.")
 
+    # JavaScript 'window.top.location.href' forces the browser to respond and open Microsoft
+    login_btn_html = f"""
+    <div style="text-align: center;">
+        <button onclick="window.top.location.href='{auth_url}'" style="
+            background-color: #0078d4; color: white; padding: 15px 32px;
+            text-align: center; border: none; border-radius: 8px;
+            font-size: 16px; cursor: pointer; font-weight: bold;
+        ">
+            🚀 Open Microsoft Outlook Login
+        </button>
+    </div>
+    """
+    st.markdown(login_btn_html, unsafe_allow_html=True)
+    
+    # Handle the redirect code coming back from Microsoft
     if "code" in st.query_params:
         result = msal_app.acquire_token_by_authorization_code(
             st.query_params["code"], scopes=SCOPES, redirect_uri=REDIRECT_URI
         )
         if "access_token" in result:
             st.session_state.token = result["access_token"]
+            st.query_params.clear()
             st.rerun()
     st.stop()
 
-# --- 3. UI (EXACTLY LIKE YOUR ORIGINAL CODE) ---
+# --- 4. MAIN UI (Matches your original design) ---
 st.title("📧 Outlook Universal Sender")
 
 with st.sidebar:
     st.header("1. Account Settings")
-    from_email = st.text_input("Send From (Account Email)", help="Leave blank to use logged-in account")
+    from_email = st.text_input("Send From (Account Email)", help="Leave blank to use default account")
     batch_size = st.number_input("BCC Batch Size", value=50, min_value=1)
     st.info("💡 A 5-second pause is applied between each batch for safety.")
     if st.button("Logout"):
@@ -71,17 +84,16 @@ with col2:
 
 send_btn = st.button("🚀 Send Email(s)")
 
-# --- 4. LOGIC (WEB VERSION OF YOUR WIN32 LOGIC) ---
+# --- 5. LOGIC (Web-API version of your win32 logic) ---
 if send_btn:
     if not draft_subject:
         st.error("Please enter the Draft Subject.")
     else:
         headers = {'Authorization': f"Bearer {st.session_state.token}"}
-        # Use 'me' or a specific user
         base_url = f"https://graph.microsoft.com/v1.0/{f'users/{from_email}' if from_email else 'me'}"
 
         try:
-            # Step A: Find the Draft
+            # A. Find the Draft
             draft_query = f"{base_url}/messages?$filter=subject eq '{draft_subject}' and isDraft eq true"
             r = requests.get(draft_query, headers=headers).json()
 
@@ -90,7 +102,7 @@ if send_btn:
             else:
                 body_content = r['value'][0]['body']['content']
                 
-                # Step B: Excel Recipient Logic
+                # B. Excel Logic (including header skip)
                 bcc_list = []
                 if uploaded_file:
                     df = pd.read_excel(uploaded_file, header=None)
@@ -102,13 +114,13 @@ if send_btn:
                     else:
                         bcc_list = all_rows
 
-                # Step C: Sending Logic
+                # C. Batch Sending
                 if not to_email and not bcc_list:
                     st.error("No recipients found.")
                 else:
                     total_batches = (len(bcc_list) + batch_size - 1) // batch_size if bcc_list else 1
                     
-                    # Batch Loop
+                    # Send process
                     for i in range(0, max(len(bcc_list), 1), int(batch_size)):
                         batch = bcc_list[i:i + int(batch_size)]
                         batch_num = (i // int(batch_size)) + 1
@@ -131,18 +143,18 @@ if send_btn:
                             else:
                                 st.success(f"✅ Single email sent successfully to {to_email}")
                         else:
-                            st.error(f"Error sending: {send_res.text}")
+                            st.error(f"Error: {send_res.text}")
 
-                        # Countdown Timer
+                        # 5 Second Pause with Countdown
                         if batch_num < total_batches:
-                            countdown_placeholder = st.empty()
-                            for seconds_left in range(5, 0, -1):
-                                countdown_placeholder.info(f"⏳ Waiting {seconds_left} seconds before next batch...")
+                            countdown = st.empty()
+                            for s in range(5, 0, -1):
+                                countdown.info(f"⏳ Waiting {s} seconds before next batch...")
                                 time.sleep(1)
-                            countdown_placeholder.empty()
+                            countdown.empty()
 
                     if bcc_list:
-                        st.success(f"🎉 All batches sent successfully!")
+                        st.success(f"🎉 All {len(bcc_list)} recipients processed!")
 
         except Exception as e:
-            st.error(f"An error occurred: {e}")
+            st.error(f"Connection Error: {e}")
