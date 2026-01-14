@@ -4,112 +4,143 @@ import requests
 import pandas as pd
 import time
 
-# --- CONFIG ---
+# --- 1. CONFIGURATION ---
+# Replace these with your actual IDs or ensure they are in Streamlit Secrets
 CLIENT_ID = st.secrets["MS_CLIENT_ID"]
 CLIENT_SECRET = st.secrets["MS_CLIENT_SECRET"]
-TENANT_ID = st.secrets["MS_TENANT_ID"] # Use 'common'
+TENANT_ID = "common"  # Works for both Personal and Work accounts
 AUTHORITY = f"https://login.microsoftonline.com/{TENANT_ID}"
-# Use your actual Streamlit URL here
+
+# IMPORTANT: This must match your Azure Portal Redirect URI exactly
+# Use "http://localhost:8501" for local testing
 REDIRECT_URI = "https://your-app-name.streamlit.app" 
+
 SCOPES = ["Mail.Read", "Mail.Send", "User.Read"]
 
 st.set_page_config(page_title="Pro Email Blaster", layout="wide")
 
-# --- MSAL HELPER ---
+# --- 2. AUTHENTICATION HELPER ---
 def get_msal_app():
     return msal.ConfidentialClientApplication(
         CLIENT_ID, authority=AUTHORITY, client_credential=CLIENT_SECRET
     )
 
-# --- AUTHENTICATION FLOW ---
+# --- 3. LOGIN INTERFACE ---
 if 'token' not in st.session_state:
-    st.title("🔒 Access Required")
-    st.write("Please log in with your Microsoft account to use the blasting tool.")
+    st.title("📧 Outlook Bulk Email Sender")
+    st.info("Please log in to your Microsoft account to continue.")
     
-    # Create the login URL
     msal_app = get_msal_app()
     auth_url = msal_app.get_authorization_request_url(SCOPES, redirect_uri=REDIRECT_URI)
     
-    # This button opens the Microsoft login page in a new tab
-    st.markdown(f'<a href="{auth_url}" target="_self"><button style="background-color:#0078d4;color:white;padding:10px 24px;border:none;border-radius:4px;cursor:pointer;">Login with Microsoft Outlook</button></a>', unsafe_allow_html=True)
+    # HTML Button to break out of Streamlit's iframe
+    login_btn_html = f"""
+    <a href="{auth_url}" target="_top">
+        <button style="
+            background-color: #0078d4; color: white; padding: 12px 24px;
+            border: none; border-radius: 4px; font-size: 16px; cursor: pointer;
+        ">Log in with Microsoft Outlook</button>
+    </a>
+    """
+    st.markdown(login_btn_html, unsafe_allow_html=True)
 
-    # Handle the redirect back from Microsoft
-    query_params = st.query_params
-    if "code" in query_params:
+    # Handle the redirect logic
+    if "code" in st.query_params:
+        auth_code = st.query_params["code"]
         result = msal_app.acquire_token_by_authorization_code(
-            query_params["code"], scopes=SCOPES, redirect_uri=REDIRECT_URI
+            auth_code, scopes=SCOPES, redirect_uri=REDIRECT_URI
         )
         if "access_token" in result:
             st.session_state.token = result["access_token"]
+            st.query_params.clear()
             st.rerun()
     st.stop()
 
-# --- MAIN APP INTERFACE ---
+# --- 4. MAIN APPLICATION INTERFACE ---
 st.title("🚀 Pro Email Blaster")
 
 with st.sidebar:
-    st.success("Account Authenticated")
-    from_email = st.text_input("Send From (Email Alias/Shared)", placeholder="leave blank for default")
-    batch_size = st.number_input("Batch Size (Emails per group)", min_value=1, value=50)
-    delay_seconds = st.number_input("Delay between batches (seconds)", min_value=1, value=10)
-    if st.button("Logout"):
+    st.header("⚙️ Settings")
+    from_email = st.text_input("Send From (Optional)", placeholder="e.g. info@company.com", help="Leave blank to use your primary account.")
+    batch_size = st.number_input("Batch Size", min_value=1, value=50, help="How many emails to send before pausing.")
+    delay_seconds = st.number_input("Batch Delay (Seconds)", min_value=1, value=10, help="How long to wait between batches.")
+    
+    if st.button("Log Out"):
         del st.session_state.token
         st.rerun()
 
-# Sender UI
+# Layout for inputs
 col1, col2 = st.columns(2)
+
 with col1:
-    draft_subject = st.text_input("Outlook Draft Subject")
-    to_display = st.text_input("Display 'To' Name (optional)", "Valued Customer")
+    st.subheader("1. Email Content")
+    draft_subject = st.text_input("Outlook Draft Subject", placeholder="Must match your draft exactly")
+    st.caption("Tip: Create a draft in Outlook first with the body and subject you want.")
 
 with col2:
-    uploaded_file = st.file_uploader("Upload Excel (Emails in 1st Column)", type=["xlsx"])
+    st.subheader("2. Recipients")
+    uploaded_file = st.file_uploader("Upload Excel File", type=["xlsx"])
+    st.caption("Ensure emails are in the first column (Column A).")
 
-if st.button("Start Blasting"):
+# --- 5. EXECUTION LOGIC ---
+if st.button("🔥 START EMAIL BLAST"):
     if not draft_subject or not uploaded_file:
-        st.error("Missing Draft Subject or Excel File!")
+        st.error("Please provide both a Draft Subject and an Excel file.")
     else:
         headers = {'Authorization': f"Bearer {st.session_state.token}"}
         
-        # Determine Base URL (Me or another User)
-        base_endpoint = "https://graph.microsoft.com/v1.0/me"
+        # Determine API Endpoint
+        base_url = "https://graph.microsoft.com/v1.0/me"
         if from_email:
-            base_endpoint = f"https://graph.microsoft.com/v1.0/users/{from_email}"
+            base_url = f"https://graph.microsoft.com/v1.0/users/{from_email}"
 
-        # 1. Get Draft Content
-        draft_url = f"{base_endpoint}/messages?$filter=subject eq '{draft_subject}' and isDraft eq true"
-        draft_data = requests.get(draft_url, headers=headers).json()
+        # Step A: Fetch the Draft
+        with st.spinner("Searching for draft..."):
+            draft_query = f"{base_url}/messages?$filter=subject eq '{draft_subject}' and isDraft eq true"
+            response = requests.get(draft_query, headers=headers).json()
 
-        if 'value' not in draft_data or len(draft_data['value']) == 0:
-            st.error("Draft not found. Check spelling and 'From' address.")
+        if 'value' not in response or len(response['value']) == 0:
+            st.error(f"Could not find a draft with subject '{draft_subject}' in {from_email if from_email else 'your'} account.")
         else:
-            body_content = draft_data['value'][0]['body']['content']
+            draft_msg = response['value'][0]
+            body_content = draft_msg['body']['content']
+            
+            # Step B: Load Recipients
             df = pd.read_excel(uploaded_file, header=None)
-            emails = df.iloc[:, 0].dropna().astype(str).tolist()
-
-            # 2. Loop with Batching
-            for i in range(0, len(emails), batch_size):
-                current_batch = emails[i:i + batch_size]
-                st.write(f"📦 Processing batch {i//batch_size + 1}...")
+            recipient_list = df.iloc[:, 0].dropna().astype(str).tolist()
+            total_emails = len(recipient_list)
+            
+            st.info(f"Loaded {total_emails} recipients. Starting batches...")
+            
+            # Step C: Send in Batches
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+            
+            for i in range(0, total_emails, batch_size):
+                batch = recipient_list[i : i + batch_size]
                 
-                for recipient in current_batch:
-                    payload = {
+                for index, recipient in enumerate(batch):
+                    send_payload = {
                         "message": {
                             "subject": draft_subject,
                             "body": {"contentType": "HTML", "content": body_content},
-                            "toRecipients": [{"emailAddress": {"address": recipient}}],
+                            "toRecipients": [{"emailAddress": {"address": recipient}}]
                         }
                     }
-                    send_url = f"{base_endpoint}/sendMail"
-                    res = requests.post(send_url, headers=headers, json=payload)
                     
-                    if res.status_code == 202:
+                    send_res = requests.post(f"{base_url}/sendMail", headers=headers, json=send_payload)
+                    
+                    if send_res.status_code == 202:
                         st.write(f"✅ Sent: {recipient}")
                     else:
-                        st.error(f"❌ Failed {recipient}: {res.text}")
-                    
-                if i + batch_size < len(emails):
-                    st.info(f"⏳ Waiting {delay_seconds}s for next batch...")
+                        st.error(f"❌ Failed: {recipient} | {send_res.text}")
+                
+                # Progress and Batch Delay
+                current_progress = min((i + batch_size) / total_emails, 1.0)
+                progress_bar.progress(current_progress)
+                
+                if i + batch_size < total_emails:
+                    status_text.warning(f"Batch complete. Waiting {delay_seconds}s before next batch...")
                     time.sleep(delay_seconds)
             
-            st.success("All batches completed!")
+            status_text.success("🏁 All emails have been processed!")
