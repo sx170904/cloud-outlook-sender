@@ -13,7 +13,7 @@ REDIRECT_URI = "https://cloud-outlook-sender-kn4vdkgrcmxz7pfk5lfp3f.streamlit.ap
 
 SCOPES = ["Mail.Read", "Mail.Send", "User.Read"]
 
-# --- 2. THE POPUP BREAKOUT (THIS FIXES THE BUTTON NO RESPONSE) ---
+# --- 2. THE INSTANT BRIDGE (POPUPS HANDLER) ---
 if "code" in st.query_params:
     msal_app = msal.ConfidentialClientApplication(CLIENT_ID, authority=AUTHORITY, client_credential=CLIENT_SECRET)
     result = msal_app.acquire_token_by_authorization_code(
@@ -22,21 +22,13 @@ if "code" in st.query_params:
     if "access_token" in result:
         st.session_state.token = result["access_token"]
         
-        # We use window.top.location.href to break out of the iframe
+        # We use a raw HTML meta-refresh + Top-level JS jump
+        # This is the fastest way to get to Outlook
+        st.write("### ✅ Account Linked. Redirecting to Outlook...")
         st.markdown(f"""
-            <div style="text-align:center; margin-top:50px; font-family: sans-serif;">
-                <h1 style="color: #25D366;">✅ Login Successful</h1>
-                <p style="font-size: 18px;">Click the button below to switch this window to Outlook.</p>
-                <button onclick="window.top.location.href='https://outlook.office.com/mail/';" style="
-                    background-color: #0078d4; color: white; padding: 20px 40px; 
-                    border: none; border-radius: 8px; font-weight: bold; cursor: pointer; font-size: 20px;
-                ">🚀 OPEN OUTLOOK INBOX</button>
-            </div>
+            <meta http-equiv="refresh" content="0; url=https://outlook.office.com/mail/">
             <script>
-                // Auto-jump attempt using Top-Level navigation
-                setTimeout(function(){{
-                    window.top.location.href = 'https://outlook.office.com/mail/';
-                }}, 1000);
+                window.top.location.href = "https://outlook.office.com/mail/";
             </script>
         """, unsafe_allow_html=True)
         st.stop()
@@ -70,14 +62,15 @@ with col2:
 
 # --- 4. DYNAMIC BUTTON LOGIC ---
 if 'token' not in st.session_state:
-    # Refresh the main page every 4 seconds to detect the login
-    st.markdown("""<script>setInterval(function(){ window.parent.location.reload(); }, 4000);</script>""", unsafe_allow_html=True)
+    # Refresh the main page frequently to check for the token
+    st.markdown("""<script>setInterval(function(){ window.parent.location.reload(); }, 3000);</script>""", unsafe_allow_html=True)
     
     msal_app = msal.ConfidentialClientApplication(CLIENT_ID, authority=AUTHORITY, client_credential=CLIENT_SECRET)
     auth_url = msal_app.get_authorization_request_url(SCOPES, redirect_uri=REDIRECT_URI, prompt="select_account")
     
-    st.warning("⚠️ Action Required: Please link your Outlook account.")
+    st.warning("⚠️ Action Required: Link your Outlook account to send.")
     
+    # Styled Login Button
     login_html = f"""
     <div style="text-align: center;">
         <button onclick="window.open('{auth_url}', 'OutlookApp', 'width=1100,height=850')" style="
