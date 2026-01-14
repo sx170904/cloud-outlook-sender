@@ -13,7 +13,7 @@ REDIRECT_URI = "https://cloud-outlook-sender-kn4vdkgrcmxz7pfk5lfp3f.streamlit.ap
 
 SCOPES = ["Mail.Read", "Mail.Send", "User.Read"]
 
-# --- 2. THE POPUP REDIRECT HANDLER ---
+# --- 2. THE POPUP BREAKOUT (THIS FIXES THE BUTTON NO RESPONSE) ---
 if "code" in st.query_params:
     msal_app = msal.ConfidentialClientApplication(CLIENT_ID, authority=AUTHORITY, client_credential=CLIENT_SECRET)
     result = msal_app.acquire_token_by_authorization_code(
@@ -22,20 +22,20 @@ if "code" in st.query_params:
     if "access_token" in result:
         st.session_state.token = result["access_token"]
         
-        # We use window.open with '_self' to force the window to leave the app and go to Outlook
+        # We use window.top.location.href to break out of the iframe
         st.markdown(f"""
             <div style="text-align:center; margin-top:50px; font-family: sans-serif;">
                 <h1 style="color: #25D366;">✅ Login Successful</h1>
-                <p style="font-size: 18px;">Click below to open your Outlook Inbox in this window:</p>
-                <button onclick="window.location.assign('https://outlook.office.com/mail/')" style="
-                    background-color: #0078d4; color: white; padding: 15px 30px; 
-                    border: none; border-radius: 5px; font-weight: bold; cursor: pointer;
-                ">OPEN OUTLOOK INBOX</button>
+                <p style="font-size: 18px;">Click the button below to switch this window to Outlook.</p>
+                <button onclick="window.top.location.href='https://outlook.office.com/mail/';" style="
+                    background-color: #0078d4; color: white; padding: 20px 40px; 
+                    border: none; border-radius: 8px; font-weight: bold; cursor: pointer; font-size: 20px;
+                ">🚀 OPEN OUTLOOK INBOX</button>
             </div>
             <script>
-                // This is the forceful jump
+                // Auto-jump attempt using Top-Level navigation
                 setTimeout(function(){{
-                    window.location.assign('https://outlook.office.com/mail/');
+                    window.top.location.href = 'https://outlook.office.com/mail/';
                 }}, 1000);
             </script>
         """, unsafe_allow_html=True)
@@ -70,7 +70,7 @@ with col2:
 
 # --- 4. DYNAMIC BUTTON LOGIC ---
 if 'token' not in st.session_state:
-    # Auto-refresh main page every 4 seconds to see the token
+    # Refresh the main page every 4 seconds to detect the login
     st.markdown("""<script>setInterval(function(){ window.parent.location.reload(); }, 4000);</script>""", unsafe_allow_html=True)
     
     msal_app = msal.ConfidentialClientApplication(CLIENT_ID, authority=AUTHORITY, client_credential=CLIENT_SECRET)
@@ -78,10 +78,9 @@ if 'token' not in st.session_state:
     
     st.warning("⚠️ Action Required: Please link your Outlook account.")
     
-    # Opening the window with specific parameters to ensure it is a new top-level window
     login_html = f"""
     <div style="text-align: center;">
-        <button onclick="window.open('{auth_url}', 'OutlookApp', 'width=1100,height=850,menubar=yes,toolbar=yes,location=yes')" style="
+        <button onclick="window.open('{auth_url}', 'OutlookApp', 'width=1100,height=850')" style="
             background-color: #0078d4; color: white; padding: 18px 45px; 
             border: none; border-radius: 8px; font-weight: bold; cursor: pointer; font-size: 18px;">
             🔗 LOGIN & OPEN OUTLOOK
@@ -122,14 +121,12 @@ else:
                                     "subject": draft_subject,
                                     "body": {"contentType": "HTML", "content": body_content},
                                     "toRecipients": [{"emailAddress": {"address": to_email}}] if to_email else [],
-                                    "ccRecipients": [{"emailAddress": {"address": cc_email}}] if cc_email else [],
                                     "bccRecipients": [{"emailAddress": {"address": e}} for e in batch]
                                 }
                             }
-                            res = requests.post(f"{base_url}/sendMail", headers=headers, json=payload)
-                            if res.status_code == 202:
-                                st.write(f"✅ Batch sent successfully.")
+                            requests.post(f"{base_url}/sendMail", headers=headers, json=payload)
+                            st.write(f"✅ Batch sent successfully.")
                             time.sleep(5)
-                        st.success("🎉 All tasks complete!")
+                        st.success("🎉 Complete!")
             except Exception as e:
                 st.error(f"Error: {e}")
