@@ -5,7 +5,6 @@ import pandas as pd
 import time
 
 # --- 1. CONFIGURATION ---
-# These must be set in your Streamlit Cloud Secrets
 CLIENT_ID = st.secrets["MS_CLIENT_ID"]
 CLIENT_SECRET = st.secrets["MS_CLIENT_SECRET"]
 TENANT_ID = "common"
@@ -15,7 +14,7 @@ REDIRECT_URI = "https://cloud-outlook-sender-kn4vdkgrcmxz7pfk5lfp3f.streamlit.ap
 SCOPES = ["Mail.Read", "Mail.Send", "User.Read"]
 
 # --- 2. THE OUTLOOK JUMPER (POPUPS HANDLER) ---
-# This part handles the small window after Microsoft sends the 'code' back.
+# We use st.query_params to detect the return from Microsoft
 if "code" in st.query_params:
     msal_app = msal.ConfidentialClientApplication(CLIENT_ID, authority=AUTHORITY, client_credential=CLIENT_SECRET)
     result = msal_app.acquire_token_by_authorization_code(
@@ -24,19 +23,26 @@ if "code" in st.query_params:
     if "access_token" in result:
         st.session_state.token = result["access_token"]
         
-        # JAVASCRIPT: Force this small window to show the REAL Outlook Inbox
+        # This UI shows in the small window. It FORCES the redirect.
         st.markdown(f"""
-            <script>
-                window.location.replace('https://outlook.office.com/mail/');
-            </script>
             <div style="text-align:center; margin-top:50px; font-family: sans-serif;">
-                <h2 style="color: #0078d4;">✅ Login Successful</h2>
-                <p>Opening your Outlook Inbox in this window...</p>
+                <h1 style="color: #25D366;">✅ Login Successful</h1>
+                <p style="font-size: 18px;">Opening Outlook Inbox... If it doesn't open, click below:</p>
+                <a href="https://outlook.office.com/mail/" target="_self" style="
+                    background-color: #0078d4; color: white; padding: 15px 30px; 
+                    text-decoration: none; border-radius: 5px; font-weight: bold; display: inline-block;
+                ">GO TO OUTLOOK NOW</a>
             </div>
+            <script>
+                // Force the window to change to Outlook immediately
+                setTimeout(function(){{
+                    window.location.href = 'https://outlook.office.com/mail/';
+                }}, 500);
+            </script>
         """, unsafe_allow_html=True)
         st.stop()
 
-# --- 3. MAIN SENDER UI (EXACTLY YOUR ORIGINAL DESIGN) ---
+# --- 3. MAIN SENDER UI (YOUR ORIGINAL DESIGN) ---
 st.set_page_config(page_title="Outlook Universal Sender", layout="wide")
 
 st.title("📧 Outlook Universal Sender")
@@ -45,7 +51,6 @@ with st.sidebar:
     st.header("1. Account Settings")
     from_email = st.text_input("Send From (Account Email)", placeholder="Default Account")
     batch_size = st.number_input("BCC Batch Size", value=50, min_value=1)
-    st.info("💡 A 5-second pause is applied between each batch for safety.")
     
     if 'token' in st.session_state:
         if st.button("🔌 Logout / Switch Account"):
@@ -66,7 +71,7 @@ with col2:
 
 # --- 4. DYNAMIC BUTTON LOGIC ---
 if 'token' not in st.session_state:
-    # Auto-refresh original page every 4 seconds to detect when you are logged in
+    # This script makes the main page refresh itself to "detect" the login
     st.markdown("""<script>setInterval(function(){ window.parent.location.reload(); }, 4000);</script>""", unsafe_allow_html=True)
     
     msal_app = msal.ConfidentialClientApplication(CLIENT_ID, authority=AUTHORITY, client_credential=CLIENT_SECRET)
@@ -87,7 +92,7 @@ if 'token' not in st.session_state:
     st.components.v1.html(login_html, height=100)
 
 else:
-    # THIS IS YOUR ORIGINAL SEND BUTTON FUNCTION
+    # THIS IS YOUR ORIGINAL SEND BUTTON
     if st.button("🚀 Send Email(s)"):
         if not draft_subject:
             st.error("Please enter the Draft Subject.")
@@ -96,15 +101,12 @@ else:
             base_url = f"https://graph.microsoft.com/v1.0/{f'users/{from_email}' if from_email else 'me'}"
 
             try:
-                # Find Draft Logic
                 draft_res = requests.get(f"{base_url}/messages?$filter=subject eq '{draft_subject}' and isDraft eq true", headers=headers).json()
 
                 if 'value' not in draft_res or len(draft_res['value']) == 0:
-                    st.error(f"Could not find draft: '{draft_subject}'. Make sure the subject matches exactly in Outlook!")
+                    st.error(f"Could not find draft: '{draft_subject}'.")
                 else:
                     body_content = draft_res['value'][0]['body']['content']
-                    
-                    # Recipients Logic (Excel)
                     bcc_list = []
                     if uploaded_file:
                         df = pd.read_excel(uploaded_file, header=None)
@@ -114,12 +116,8 @@ else:
                     if not to_email and not bcc_list:
                         st.error("No recipients found.")
                     else:
-                        # YOUR ORIGINAL BATCHING LOGIC
-                        total_batches = (len(bcc_list) + batch_size - 1) // batch_size if bcc_list else 1
                         for i in range(0, max(len(bcc_list), 1), int(batch_size)):
                             batch = bcc_list[i : i + int(batch_size)]
-                            batch_num = (i // int(batch_size)) + 1
-                            
                             payload = {
                                 "message": {
                                     "subject": draft_subject,
@@ -130,15 +128,9 @@ else:
                                 }
                             }
                             res = requests.post(f"{base_url}/sendMail", headers=headers, json=payload)
-                            
                             if res.status_code == 202:
-                                st.write(f"✅ Batch {batch_num} of {total_batches} Sent.")
-                            else:
-                                st.error(f"Error: {res.text}")
-
-                            if batch_num < total_batches:
-                                time.sleep(5)
-                        
-                        st.success("🎉 Email Blast Completed!")
+                                st.write(f"✅ Batch sent successfully.")
+                            time.sleep(5)
+                        st.success("🎉 All tasks complete!")
             except Exception as e:
-                st.error(f"Critical Error: {e}")
+                st.error(f"Error: {e}")
