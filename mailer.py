@@ -9,13 +9,12 @@ CLIENT_ID = st.secrets["MS_CLIENT_ID"]
 CLIENT_SECRET = st.secrets["MS_CLIENT_SECRET"]
 TENANT_ID = "common"
 AUTHORITY = f"https://login.microsoftonline.com/{TENANT_ID}"
-# YOUR REDIRECT URL
 REDIRECT_URI = "https://cloud-outlook-sender-kn4vdkgrcmxz7pfk5lfp3f.streamlit.app/" 
 
 SCOPES = ["Mail.Read", "Mail.Send", "User.Read"]
 
-# --- 2. THE OUTLOOK BREAKOUT (POPUPS HANDLER) ---
-# This part handles the "Refused to Connect" fix
+# --- 2. TOKEN & LOGIN HANDLER ---
+# This part catches you when you return from Microsoft
 if "code" in st.query_params:
     msal_app = msal.ConfidentialClientApplication(CLIENT_ID, authority=AUTHORITY, client_credential=CLIENT_SECRET)
     result = msal_app.acquire_token_by_authorization_code(
@@ -23,27 +22,12 @@ if "code" in st.query_params:
     )
     if "access_token" in result:
         st.session_state.token = result["access_token"]
-        
-        # This code breaks out of the Streamlit iframe to prevent "Refused to Connect"
-        st.markdown(f"""
-            <div style="text-align:center; margin-top:50px; font-family: sans-serif;">
-                <h2 style="color: #0078d4;">✅ Account Verified</h2>
-                <p>Opening Outlook Inbox...</p>
-                <a href="https://outlook.office.com/mail/" target="_top" style="
-                    background-color: #0078d4; color: white; padding: 15px 30px; 
-                    text-decoration: none; border-radius: 5px; font-weight: bold;
-                ">Click here if Outlook doesn't load</a>
-            </div>
-            <script>
-                // This breaks the frame security and forces the window to become Outlook
-                window.top.location.href = "https://outlook.office.com/mail/";
-            </script>
-        """, unsafe_allow_html=True)
-        st.stop()
+        # Clear the code from the URL for a clean UI
+        st.query_params.clear()
+        st.rerun()
 
-# --- 3. MAIN SENDER UI (EXACTLY YOUR ORIGINAL DESIGN) ---
+# --- 3. MAIN SENDER UI (YOUR ORIGINAL DESIGN) ---
 st.set_page_config(page_title="Outlook Universal Sender", layout="wide")
-
 st.title("📧 Outlook Universal Sender")
 
 with st.sidebar:
@@ -70,28 +54,25 @@ with col2:
 
 # --- 4. DYNAMIC BUTTON LOGIC ---
 if 'token' not in st.session_state:
-    # Auto-refresh original page every 4 seconds to detect when you are logged in
-    st.markdown("""<script>setInterval(function(){ window.parent.location.reload(); }, 4000);</script>""", unsafe_allow_html=True)
-    
     msal_app = msal.ConfidentialClientApplication(CLIENT_ID, authority=AUTHORITY, client_credential=CLIENT_SECRET)
     auth_url = msal_app.get_authorization_request_url(SCOPES, redirect_uri=REDIRECT_URI, prompt="select_account")
     
-    st.warning("⚠️ Action Required: Please link your Outlook account.")
+    st.warning("⚠️ Action Required: You must link your account to enable sending.")
     
-    # Styled Login Button (Opens the small window)
-    login_html = f"""
-    <div style="text-align: center;">
-        <button onclick="window.open('{auth_url}', 'OutlookApp', 'width=1100,height=850')" style="
-            background-color: #0078d4; color: white; padding: 18px 45px; 
-            border: none; border-radius: 8px; font-weight: bold; cursor: pointer; font-size: 18px;">
-            🔗 LOGIN & OPEN OUTLOOK
-        </button>
-    </div>
-    """
-    st.components.v1.html(login_html, height=100)
+    # We use a direct link instead of window.open for better reliability
+    st.markdown(f"""
+        <div style="text-align: center;">
+            <a href="{auth_url}" target="_self" style="
+                background-color: #0078d4; color: white; padding: 18px 45px; 
+                text-decoration: none; border-radius: 8px; font-weight: bold; 
+                display: inline-block; font-size: 18px;
+            ">🔗 LOGIN TO OUTLOOK</a>
+            <p style="margin-top:10px; color: gray;">(This will refresh the page to link your account)</p>
+        </div>
+    """, unsafe_allow_html=True)
 
 else:
-    # --- 5. YOUR ORIGINAL SENDING FUNCTION (UNCHANGED) ---
+    # --- 5. YOUR ORIGINAL SENDING FUNCTION ---
     if st.button("🚀 Send Email(s)"):
         if not draft_subject:
             st.error("Please enter the Draft Subject.")
@@ -100,15 +81,12 @@ else:
             base_url = f"https://graph.microsoft.com/v1.0/{f'users/{from_email}' if from_email else 'me'}"
 
             try:
-                # Find Draft Logic
                 draft_res = requests.get(f"{base_url}/messages?$filter=subject eq '{draft_subject}' and isDraft eq true", headers=headers).json()
 
                 if 'value' not in draft_res or len(draft_res['value']) == 0:
-                    st.error(f"Could not find draft: '{draft_subject}'. Make sure it matches exactly in Outlook!")
+                    st.error(f"Could not find draft: '{draft_subject}'.")
                 else:
                     body_content = draft_res['value'][0]['body']['content']
-                    
-                    # Recipients Logic (Excel)
                     bcc_list = []
                     if uploaded_file:
                         df = pd.read_excel(uploaded_file, header=None)
@@ -118,12 +96,8 @@ else:
                     if not to_email and not bcc_list:
                         st.error("No recipients found.")
                     else:
-                        # YOUR ORIGINAL BATCHING LOGIC
-                        total_batches = (len(bcc_list) + batch_size - 1) // batch_size if bcc_list else 1
                         for i in range(0, max(len(bcc_list), 1), int(batch_size)):
                             batch = bcc_list[i : i + int(batch_size)]
-                            batch_num = (i // int(batch_size)) + 1
-                            
                             payload = {
                                 "message": {
                                     "subject": draft_subject,
@@ -134,15 +108,9 @@ else:
                                 }
                             }
                             res = requests.post(f"{base_url}/sendMail", headers=headers, json=payload)
-                            
                             if res.status_code == 202:
-                                st.write(f"✅ Batch {batch_num} of {total_batches} Sent.")
-                            else:
-                                st.error(f"Error: {res.text}")
-
-                            if batch_num < total_batches:
-                                time.sleep(5)
-                        
-                        st.success("🎉 Email Blast Completed!")
+                                st.write(f"✅ Batch {i//batch_size + 1} Sent.")
+                            time.sleep(5)
+                        st.success("🎉 All emails sent!")
             except Exception as e:
-                st.error(f"Critical Error: {e}")
+                st.error(f"Error: {e}")
