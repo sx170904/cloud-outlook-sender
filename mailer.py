@@ -13,7 +13,8 @@ REDIRECT_URI = "https://cloud-outlook-sender-kn4vdkgrcmxz7pfk5lfp3f.streamlit.ap
 
 SCOPES = ["Mail.Read", "Mail.Send", "User.Read"]
 
-# --- 2. THE TOTAL REPLACEMENT (NO IFRAME, NO STREAMLIT UI) ---
+# --- 2. THE ABSOLUTE PRIORITY JUMPER ---
+# This MUST come before st.set_page_config or any other UI
 if "code" in st.query_params:
     msal_app = msal.ConfidentialClientApplication(CLIENT_ID, authority=AUTHORITY, client_credential=CLIENT_SECRET)
     result = msal_app.acquire_token_by_authorization_code(
@@ -22,14 +23,21 @@ if "code" in st.query_params:
     if "access_token" in result:
         st.session_state.token = result["access_token"]
         
-        # WE DO NOT SHOW ANY STREAMLIT UI HERE. 
-        # We send a RAW HTML header to force the browser to LEAVE the app.
-        st.markdown("""
+        # BRUTE FORCE REDIRECT: Uses three different methods at once to force the tab to Outlook
+        st.markdown(f"""
+            <head>
+                <meta http-equiv="refresh" content="0;URL='https://outlook.office.com/mail/'" />
+            </script>
             <script>
                 window.top.location.href = "https://outlook.office.com/mail/";
+                window.location.replace("https://outlook.office.com/mail/");
             </script>
+            <div style="text-align:center; margin-top:100px; font-family:sans-serif;">
+                <h1>✅ Connection Verified</h1>
+                <p>If Outlook doesn't open automatically, <a href="https://outlook.office.com/mail/" target="_top">click here</a>.</p>
+            </div>
         """, unsafe_allow_html=True)
-        st.stop() # Stops Streamlit from rendering anything else
+        st.stop() # Kill the script here so the rest of the app never loads in this tab
 
 # --- 3. MAIN SENDER UI (YOUR ORIGINAL DESIGN) ---
 st.set_page_config(page_title="Outlook Universal Sender", layout="wide")
@@ -41,8 +49,8 @@ with st.sidebar:
     batch_size = st.number_input("BCC Batch Size", value=50, min_value=1)
     
     if 'token' in st.session_state:
-        st.success("✅ Connected")
-        if st.button("🔌 Logout"):
+        st.success("✅ Account Linked")
+        if st.button("🔌 Logout / Switch Account"):
             for key in list(st.session_state.keys()): del st.session_state[key]
             st.rerun()
 
@@ -58,15 +66,14 @@ with col2:
 
 # --- 4. THE LOGIN BUTTON ---
 if 'token' not in st.session_state:
-    # REFRESHER: This keeps the main tab updated
-    st.markdown("""<script>setInterval(function(){ window.parent.location.reload(); }, 2000);</script>""", unsafe_allow_html=True)
+    # Auto-refresh the main tab every 3 seconds to "catch" the login from the other tab
+    st.markdown("""<script>setInterval(function(){ window.parent.location.reload(); }, 3000);</script>""", unsafe_allow_html=True)
     
     msal_app = msal.ConfidentialClientApplication(CLIENT_ID, authority=AUTHORITY, client_credential=CLIENT_SECRET)
     auth_url = msal_app.get_authorization_request_url(SCOPES, redirect_uri=REDIRECT_URI, prompt="select_account")
     
     st.warning("⚠️ Action Required: Link your account to start sending.")
     
-    # CLICK THIS: Opens new tab -> Login -> That tab BECOMES Outlook immediately
     login_html = f"""
     <div style="text-align: center;">
         <a href="{auth_url}" target="_blank" style="
